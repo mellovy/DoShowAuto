@@ -105,7 +105,10 @@ class Api:
         nets = db.networks()
         net = cherrypy.session.get("network") or (nets[0] if nets else "Default-Network")
         did, dev = cherrypy.session.get("device_id"), None
-        for d in db.devices():
+        rows = db.devices()
+        if not did and device.MOCK and rows:  # DSA_MOCK: auto-use the seeded simulated switch
+            did = rows[0]["id"]; cherrypy.session["device_id"] = did
+        for d in rows:
             if d["id"] == did:
                 dev = {k: d[k] for k in ("id", "name", "host", "status", "network")}
         return {"user": db.get_user(u) or {"username": u, "email": ""}, "networks": nets or [net], "network": net,
@@ -377,12 +380,26 @@ CONF = {"/": {"tools.sessions.on": True, "tools.sessions.timeout": 60, "tools.se
         "/static": {"tools.staticdir.on": True, "tools.staticdir.dir": "static", "tools.sessions.on": False}}
 
 
+def _seed_demo_device():
+    """DSA_MOCK: pre-register a simulated switch so no SSH connect is needed."""
+    try:
+        if db.devices():
+            return
+        db.upsert_device("Default-Network", "10.0.0.1", DEFAULT_USER(), "mock", "mock", "core-switch-01",
+                         {"platform": "Cisco C9300-24T", "version": "17.06.03", "mgmt_if": "GigabitEthernet0/1"})
+        print("DSA_MOCK: seeded simulated device core-switch-01 (10.0.0.1)")
+    except Exception as e:
+        print("DSA_MOCK: seed skipped:", e)
+
+
 def main():
     for _ in range(30):
         try:
             db.init(); break
         except Exception as e:
             print("waiting for database:", e); time.sleep(2)
+    if device.MOCK:
+        _seed_demo_device()
     cherrypy.config.update({"server.socket_host": "0.0.0.0", "server.socket_port": int(os.environ.get("PORT", 8080)), "server.thread_pool": 20})
     cherrypy.quickstart(App(), "/", CONF)
 

@@ -14,10 +14,26 @@ async function api(path, body) {
 }
 function toast(m, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = m; document.body.append(t); setTimeout(() => t.remove(), err ? 6000 : 2500); }
 const val = id => ($('#' + id) || {}).value || '';
-const field = (label, id, v = '', attrs = '', extra = '') => `<label class="f"><span class="hl">${label}${extra}</span><input id="${id}" value="${esc(v)}" ${attrs}></label>`;
+const field = (label, id, v = '', attrs = '', extra = '', hint = '') => `<label class="f"><span class="hl">${label}${extra}</span><input id="${id}" value="${esc(v)}" ${attrs}>${hint ? `<small class="hint">${hint}</small>` : ''}</label>`;
 const lk = (txt, id) => `<button class="link" data-act="${id}">${txt}</button>`;
 const chips = (arr) => arr.map(([t, a]) => `<span class="chip" data-act="${a}">${t}</span>`).join('');
 const panel = (title, body) => `<div class="pdet"><h4>${title}</h4><div class="in">${body}</div></div>`;
+
+// ---- validation helpers ----------------------------------------------
+const isIP = s => { s = String(s || '').trim(); return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split('.').every(o => +o <= 255); };
+const inRange = (v, a, b) => /^\d+$/.test(String(v).trim()) && +v >= a && +v <= b;
+// dotted mask -> prefix length, accepting "/24" or "24" too; null if not a subnet mask
+const maskPrefix = v => { v = String(v || '').trim(); if (!v) return null; if (/^\/?\d{1,2}$/.test(v)) { const p = +v.replace('/', ''); return p <= 32 ? p : null; } if (!isIP(v)) return null; const inv = (~ip2n(v)) >>> 0; return (inv & (inv + 1)) === 0 ? v.split('.').reduce((a, o) => a + (+o).toString(2).replace(/0/g, '').length, 0) : null; };
+const prefixMask = p => p == null ? '' : n2ip(maskOf(p));
+// show inline hint/error under any field; bad=true colours it red, otherwise neutral guidance
+function setMsg(id, text, bad) {
+  const input = $('#' + id); if (!input) return;
+  const host = input.closest('label.f') || input.parentElement; if (!host) return;
+  let m = host.querySelector('.msg'); if (!m) { m = document.createElement('small'); m.className = 'msg'; host.append(m); }
+  m.textContent = text || ''; m.classList.toggle('bad', !!bad && !!text);
+}
+// replay the section entrance animation on navigation (not on every redraw)
+function enter() { if (!main) return; main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter'); }
 
 // ---- console ----------------------------------------------------------
 const term = $('#term');
@@ -104,6 +120,7 @@ async function boot() {
   const d = S.me.device; $('#st-dev').textContent = d ? d.name : 'none'; $('#st-state').textContent = d ? d.status : '-'; $('#st-state').style.color = d && d.status === 'Up' ? '#0a7a4b' : '#c62828';
   if ($('#live-title')) $('#live-title').textContent = 'LIVE CONSOLE' + (d ? ': ' + d.name : '');
   initCalc();
+  enter();
   ({ general: pageGeneral, configure: pageConfigure, devices: pageDevices, logs: pageLogs })[PAGE]();
 }
 const needDev = () => { if (!S.me.device) { main.innerHTML = '<div class="panel">No device connected. Open <a href="/">General</a> and use SSH Access to connect to a Cisco device.</div>'; return true; } };
@@ -126,7 +143,7 @@ function pageGeneral() {
 // ---- Configure --------------------------------------------------------
 const VIEWS = { interfaces: vInterfaces, dhcp: vDhcp, vlans: vVlans, routing: vRouting, etherchannel: vEtherchannel, portsec: vPortsec };
 const DEFCMD = { interfaces: 'show interfaces status', dhcp: 'show ip dhcp pool', vlans: 'show vlan brief', routing: 'show ip route', etherchannel: 'show etherchannel summary', portsec: 'show port-security' };
-function pageConfigure() { const go = () => { const v = (location.hash || '#interfaces').slice(1); if (needDev()) return; const f = VIEWS[v] || vInterfaces; defaultCmd = DEFCMD[v] || DEFCMD.interfaces; $$('#cfgmenu a').forEach(a => a.style.fontWeight = a.hash === '#' + v ? '700' : ''); f().catch(e => { main.innerHTML = `<div class="panel err">${esc(e.message)}</div>`; }); runCmd(defaultCmd); }; window.onhashchange = go; go(); }
+function pageConfigure() { const go = () => { const v = (location.hash || '#interfaces').slice(1); if (needDev()) return; const f = VIEWS[v] || vInterfaces; defaultCmd = DEFCMD[v] || DEFCMD.interfaces; $$('#cfgmenu a').forEach(a => a.style.fontWeight = a.hash === '#' + v ? '700' : ''); enter(); f().catch(e => { main.innerHTML = `<div class="panel err">${esc(e.message)}</div>`; }); runCmd(defaultCmd); }; window.onhashchange = go; go(); }
 const net24 = () => S.ifs.map(i => i.ip).filter(Boolean);
 const search = (id, rowsSel) => { const q = $('#' + id); q && (q.oninput = () => $$(rowsSel).forEach(r => r.hidden = !r.textContent.toLowerCase().includes(q.value.toLowerCase()))); };
 const wire = (map) => $$('[data-act]').forEach(e => e.onclick = () => (map[e.dataset.act] || (() => {}))(e));
@@ -139,16 +156,21 @@ async function vInterfaces() {
     main.innerHTML = `<div class="split"><div class="panel"><div class="hl"><h3>&#9919; Interface Inventory</h3><span><input id="q" placeholder="Search interfaces..."> <button class="btn blue sm" data-act="refresh">REFRESH</button></span></div>
     <table><tr><th>INTERFACE<th>STATUS<th>ASSIGNMENT<th>DESCRIPTION<th>IP ADDRESS<th>VLAN<th></tr>${ifs.map(x => `<tr class="clk ${x.name === cur ? 'sel' : ''}" data-n="${esc(x.name)}"><td class="mono">${esc(x.short)}<td><span class="tog ${x.up ? 'on' : ''}" data-tog="${esc(x.name)}"></span> ${x.up ? 'UP' : 'DOWN'}<td>${x.assignment}<td><i>${esc(x.description || '--')}</i><td class="mono">${esc(x.ip || 'unassigned')}${x.mask ? '/' + (calcMask(x.mask)) : ''}<td>${esc(x.vlan || '1')}<td>&#9998;</tr>`).join('')}</table></div>
     ${panel('DETAILS: ' + esc(i.short || ''), `<div class="seg"><button data-act="static" class="${i.assignment !== 'DHCP' ? 'on' : ''}">STATIC</button><button data-act="dhcp" class="${i.assignment === 'DHCP' ? 'on' : ''}">DHCP</button></div><input type="hidden" id="f-as" value="${i.assignment === 'DHCP' ? 'dhcp' : 'static'}">
-    ${field('IP Address', 'f-ip', i.ip, '', lk('SUGGEST NEXT', 'sugip'))}${field('Subnet Mask', 'f-mask', i.mask, '', lk('PULL FROM INVENTORY', 'pullmask'))}${field('Description', 'f-desc', i.description, '', '')}<div>${chips([['STANDARD UPLINK', 'uplink'], ['HOST PORT', 'host']])}</div>
-    <label class="f">VLAN Assignment<div style="display:flex;gap:6px"><input id="f-vlan" list="vls" placeholder="Search VLAN ID..." value="${i.vlan && i.vlan !== 'Trunk' ? esc(i.vlan) : ''}"><select id="f-tr" style="width:130px"><option value="0">Access VLAN</option><option value="1" ${i.vlan === 'Trunk' ? 'selected' : ''}>Trunk Mode</option></select></div></label><datalist id="vls">${vl.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</datalist>
+    ${field('IP Address', 'f-ip', i.ip, 'placeholder="10.128.0.1" inputmode="decimal"', lk('SUGGEST NEXT', 'sugip'))}${field('Subnet Mask', 'f-mask', i.mask, 'placeholder="255.255.255.0 or /24"', lk('PULL FROM INVENTORY', 'pullmask'), 'Dotted mask or /prefix — the two are interchangeable.')}${field('Description', 'f-desc', i.description, 'placeholder="Uplink to Core"', '')}<div>${chips([['STANDARD UPLINK', 'uplink'], ['HOST PORT', 'host']])}</div>
+    <label class="f" id="f-vlanwrap">VLAN Assignment<div style="display:flex;gap:6px"><input id="f-vlan" list="vls" placeholder="Search VLAN ID..." value="${i.vlan && i.vlan !== 'Trunk' ? esc(i.vlan) : ''}"><select id="f-tr" style="width:130px"><option value="0">Access VLAN</option><option value="1" ${i.vlan === 'Trunk' ? 'selected' : ''}>Trunk Mode</option></select></div></label><datalist id="vls">${vl.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</datalist>
     <button class="btn wide" data-act="apply" style="background:#0a7a4b">&#9654; APPLY CONFIGURATION</button>`)}</div>`;
     $$('tr[data-n]').forEach(r => r.onclick = e => { if (e.target.dataset.tog) return; cur = r.dataset.n; draw(); });
     $$('[data-tog]').forEach(t => t.onclick = async () => { const x = ifs.find(y => y.name === t.dataset.tog); await done(await apply({ kind: 'interface', interface: x.name, enabled: !x.up }, x.short + (x.up ? ' shutdown' : ' enabled')), load); });
     search('q', 'tr[data-n]');
+    $('#f-ip').oninput = () => setMsg('f-ip', val('f-ip') && !isIP(val('f-ip')) ? 'Enter a valid IPv4 address, e.g. 10.128.0.1.' : '', true);
+    $('#f-mask').oninput = () => setMsg('f-mask', val('f-mask') && maskPrefix(val('f-mask')) == null ? 'Enter a dotted mask (255.255.255.0) or a /prefix (/24).' : '', true);
+    $('#f-mask').onblur = () => { const p = maskPrefix(val('f-mask')); if (p != null) $('#f-mask').value = prefixMask(p); };
+    const trunk = () => { const t = val('f-tr') === '1', inp = $('#f-vlan'); if (t) { inp.dataset.keep = inp.value || ''; inp.value = ''; } else if (inp.dataset.keep) { inp.value = inp.dataset.keep; inp.dataset.keep = ''; } inp.disabled = t; $('#f-vlanwrap').style.opacity = t ? '.45' : '1'; setMsg('f-vlan', t ? 'Trunk carries the allowed VLANs; the access VLAN field is not used.' : '', false); };
+    $('#f-tr').onchange = trunk; trunk();
     wire({ refresh: load, static: () => { $('#f-as').value = 'static'; $$('.seg button').forEach(b => b.classList.toggle('on', b.dataset.act === 'static')); }, dhcp: () => { $('#f-as').value = 'dhcp'; $$('.seg button').forEach(b => b.classList.toggle('on', b.dataset.act === 'dhcp')); },
       sugip: () => { const used = net24(), base = (val('f-ip') || used[0] || '192.168.1.1').split('.').slice(0, 3).join('.'); let m = 0; used.filter(x => x.startsWith(base + '.')).forEach(x => m = Math.max(m, +x.split('.')[3])); $('#f-ip').value = base + '.' + Math.min(254, m + 1); },
       pullmask: () => { const f = ifs.find(x => x.mask); if (f) $('#f-mask').value = f.mask; }, uplink: () => { $('#f-desc').value = 'Uplink to Core'; $('#f-tr').value = '1'; }, host: () => { $('#f-desc').value = 'Host Port'; $('#f-tr').value = '0'; },
-      apply: async () => done(await apply({ kind: 'interface', interface: cur, assignment: val('f-as'), ip: val('f-ip'), mask: val('f-mask'), description: val('f-desc'), vlan: val('f-vlan'), trunk: val('f-tr') === '1' }, 'Interface ' + cur), load) });
+      apply: async () => { if (val('f-as') === 'static' && val('f-ip') && !isIP(val('f-ip'))) return toast('IP address must be a valid IPv4 address', true); if (val('f-mask') && maskPrefix(val('f-mask')) == null) return toast('Subnet mask must be dotted (255.255.255.0) or a /prefix', true); done(await apply({ kind: 'interface', interface: cur, assignment: val('f-as'), ip: val('f-ip'), mask: val('f-mask'), description: val('f-desc'), vlan: val('f-vlan'), trunk: val('f-tr') === '1' }, 'Interface ' + cur), load); } });
   };
   const load = async () => { const n = await api('inventory?kind=interfaces'); ifs.splice(0, ifs.length, ...n); S.ifs = ifs; draw(); }; draw();
 }
@@ -159,15 +181,25 @@ async function vDhcp() {
   const draw = () => {
     main.innerHTML = `<div class="split"><div class="panel"><div class="hl"><h3>DHCP Pools Inventory</h3><button class="btn" data-act="new">+ CREATE NEW POOL</button></div>
     <table><tr><th>POOL NAME<th>NETWORK<th>USABLE RANGE<th>LEASES<th>STATUS</tr>${pools.map(p => `<tr class="clk ${p.name === cur.name ? 'sel' : ''}" data-n="${esc(p.name)}"><td class="mono">${esc(p.name)}<td class="mono">${p.network}/${p.prefix}<td class="mono">${esc(p.range)}<td>${p.leased} / ${p.total} active<div class="bar"><i class="${p.status !== 'Active' ? 'hot' : ''}" style="width:${p.total ? Math.min(100, p.leased / p.total * 100) : 0}%"></i></div><td><span class="badge ${p.status === 'Active' ? 'b-ok' : 'b-warn'}">&#8226; ${p.status.toUpperCase()}</span></tr>`).join('')}</table></div>
-    ${panel('POOL DETAILS CONFIGURATION', `${field('Pool Name', 'd-name', cur.name || '')}${field('Assigned Network (CIDR)', 'd-net', cur.network ? cur.network + '/' + cur.prefix : '', 'placeholder="10.50.0.0/22"', lk('AUTO-FILL FROM CALCULATOR', 'autofill'))}<div class="mono" id="d-mask" style="text-align:right;color:#6b778c"></div>
-    ${field('Starting IP Address', 'd-start', '')}${field('Default Gateway', 'd-gw', cur.gateway || '', '', lk('USE x.x.x.1', 'usegw'))}<label class="f"><span class="hl">DNS Servers<span>${chips([['Google', 'dgoogle'], ['Cloudflare', 'dcf']])}</span></span><textarea id="d-dns" rows="2">${esc(cur.dns || '')}</textarea></label>
-    <div style="display:flex;gap:6px">${field('Lease days', 'd-ld', (cur.lease || '1 0 0').split(' ')[0])}${field('hours', 'd-lh', (cur.lease || '1 0 0').split(' ')[1])}${field('min', 'd-lm', (cur.lease || '1 0 0').split(' ')[2])}</div>
+    ${panel('POOL DETAILS CONFIGURATION', `${field('Pool Name', 'd-name', cur.name || '', 'placeholder="OFFICE_LAN"', '', 'Name used in IOS, e.g. OFFICE_LAN.')}${field('Assigned Network (CIDR)', 'd-net', cur.network ? cur.network + '/' + cur.prefix : '', 'placeholder="10.50.0.0/22"', lk('AUTO-FILL FROM CALCULATOR', 'autofill'), 'Network address with prefix — addresses are assigned from this subnet.')}<div class="mono" id="d-info" style="font-size:11px;color:#6b778c;margin:2px 0 8px;line-height:1.6"></div>
+    ${field('Starting IP Address', 'd-start', '', 'placeholder="first usable host"', '', 'Leave blank to start at the first usable host.')}${field('Default Gateway', 'd-gw', cur.gateway || '', 'placeholder="first usable host"', lk('USE x.x.x.1', 'usegw'), 'Defaults to the first usable host.')}<label class="f"><span class="hl">DNS Servers<span>${chips([['Google', 'dgoogle'], ['Cloudflare', 'dcf']])}</span></span><textarea id="d-dns" rows="2" placeholder="8.8.8.8, 8.8.4.4">${esc(cur.dns || '')}</textarea></label>
+    <div style="display:flex;gap:6px">${field('Lease days', 'd-ld', (cur.lease || '1 0 0').split(' ')[0], 'inputmode="numeric"')}${field('hours', 'd-lh', (cur.lease || '1 0 0').split(' ')[1], 'inputmode="numeric"')}${field('min', 'd-lm', (cur.lease || '1 0 0').split(' ')[2], 'inputmode="numeric"')}</div>
     <button class="btn wide" data-act="apply">&#9654; APPLY CHANGES</button>`)}</div>`;
     $$('tr[data-n]').forEach(r => r.onclick = () => { cur = pools.find(p => p.name === r.dataset.n); draw(); });
-    const m = () => { const c = calc(val('d-net')); $('#d-mask').textContent = c ? c.mask : ''; return c; }; $('#d-net').oninput = m; m();
+    const isNew = !cur.name;
+    const m = () => {
+      const c = calc(val('d-net')); const info = $('#d-info');
+      if (info) info.textContent = c ? `Mask ${c.mask}  ·  Broadcast ${c.bc}  ·  Hosts ${c.first} – ${c.last}  ·  ${c.hosts} usable` : '';
+      setMsg('d-net', val('d-net') && !c ? 'Enter a network like 10.50.0.0/22.' : '', true);
+      if (c && isNew) { if (!val('d-gw')) $('#d-gw').value = c.first; if (!$('#d-dns').value.trim()) $('#d-dns').value = '1.1.1.1, 1.0.0.1'; }
+      return c;
+    }; $('#d-net').oninput = m; m();
     wire({ new: () => { cur = {}; draw(); }, autofill: () => { const c = calc(S.calc); if (c) { $('#d-net').value = c.net + '/' + c.p; m(); } else toast('Enter a network in the Subnet Calculator tab first', true); },
       usegw: () => { const c = m(); if (c) $('#d-gw').value = c.first; }, dgoogle: () => $('#d-dns').value = '8.8.8.8, 8.8.4.4', dcf: () => $('#d-dns').value = '1.1.1.1, 1.0.0.1',
-      apply: async () => { const c = calc(val('d-net')); if (!c) return toast('Network must look like 10.50.0.0/22', true); done(await apply({ kind: 'dhcp', name: val('d-name'), network: c.net, mask: c.mask, gateway: val('d-gw'), dns: val('d-dns'), start_ip: val('d-start'), lease_days: val('d-ld'), lease_hours: val('d-lh'), lease_minutes: val('d-lm') }, 'DHCP pool'), () => vDhcp()); } });
+      apply: async () => { const c = calc(val('d-net')); if (!c) return toast('Network must look like 10.50.0.0/22', true);
+        const gw = val('d-gw'); if (gw && (!isIP(gw) || ip2n(gw) < ip2n(c.net) || ip2n(gw) > ip2n(c.bc))) return toast('Gateway must be an address inside ' + c.net + '/' + c.p, true);
+        const st = val('d-start'); if (st && (!isIP(st) || ip2n(st) < ip2n(c.net) || ip2n(st) > ip2n(c.bc))) return toast('Starting IP must be inside ' + c.net + '/' + c.p, true);
+        done(await apply({ kind: 'dhcp', name: val('d-name'), network: c.net, mask: c.mask, gateway: val('d-gw'), dns: val('d-dns'), start_ip: val('d-start'), lease_days: val('d-ld'), lease_hours: val('d-lh'), lease_minutes: val('d-lm') }, 'DHCP pool'), () => vDhcp()); } });
   }; draw();
 }
 
@@ -176,13 +208,16 @@ async function vVlans() {
   const draw = () => {
     main.innerHTML = `<div class="split"><div class="panel"><div class="hl"><h3>VLAN Inventory</h3><button class="btn" data-act="new">+ CREATE NEW VLAN</button></div>
     <table><tr><th>VLAN ID<th>NAME<th>INTERFACES<th>STATUS</tr>${vl.map(v => `<tr class="clk ${v.id === cur.id ? 'sel' : ''}" data-n="${v.id}"><td>${v.id}<td class="mono">${esc(v.name)}<td class="mono">${esc(v.ports || '—')}<td><span class="badge ${v.active ? 'b-ok' : 'b-warn'}">&#8226; ${v.active ? 'ACTIVE' : 'INACTIVE'}</span></tr>`).join('')}</table></div>
-    ${panel('VLAN DETAILS CONFIGURATION', `${field('VLAN ID', 'v-id', cur.id || '', '', lk('SUGGEST NEXT', 'next'))}${field('VLAN Name', 'v-name', cur.name || '')}<div>${chips([['VLAN10', 'p10'], ['MGMT', 'pm'], ['VOICE', 'pv']])}</div>
+    ${panel('VLAN DETAILS CONFIGURATION', `${field('VLAN ID', 'v-id', cur.id || '', 'type="number" min="1" max="4094" inputmode="numeric" placeholder="10"', lk('SUGGEST NEXT', 'next'), 'Range 1–4094; must be unique.')}${field('VLAN Name', 'v-name', cur.name || '', 'maxlength="32" placeholder="OFFICE"', '', 'Letters, digits, hyphen or underscore; 1–32 characters.')}<div>${chips([['VLAN10', 'p10'], ['MGMT', 'pm'], ['VOICE', 'pv']])}</div>
     ${field('Allowed VLANs (Trunk)', 'v-allow', '', 'placeholder="e.g. 1,10,20-30"', lk('AUTO-FILL', 'auto'))}<label class="f">Description<textarea id="v-desc" rows="3"></textarea></label><button class="btn wide" data-act="apply">+ CREATE NEW VLAN</button>
     <p style="font-size:10px;color:#6b778c">IOS stores only the VLAN ID and name. Allowed VLANs and Description are not pushed to the device in Sprint 1.</p>`)}</div>`;
     $$('tr[data-n]').forEach(r => r.onclick = () => { cur = vl.find(v => v.id == r.dataset.n); draw(); });
+    const nameOK = v => /^[A-Za-z0-9_-]{1,32}$/.test(v);
+    $('#v-id').oninput = () => setMsg('v-id', val('v-id') && !inRange(val('v-id'), 1, 4094) ? 'VLAN ID must be a whole number from 1 to 4094.' : '', true);
+    $('#v-name').oninput = () => setMsg('v-name', val('v-name') && !nameOK(val('v-name')) ? 'Use 1–32 letters, digits, hyphen or underscore. No spaces.' : '', true);
     wire({ new: () => { cur = {}; draw(); }, next: () => { const ids = new Set(vl.map(v => v.id)); let n = 2; while (ids.has(n)) n++; $('#v-id').value = n; },
       p10: () => { $('#v-name').value = 'VLAN10'; }, pm: () => { $('#v-name').value = 'MGMT'; }, pv: () => { $('#v-name').value = 'VOICE'; }, auto: () => { $('#v-allow').value = vl.map(v => v.id).join(','); },
-      apply: async () => done(await apply({ kind: 'vlan', vlan_id: val('v-id'), name: val('v-name') }, 'VLAN ' + val('v-id')), () => vVlans()) });
+      apply: async () => { if (!inRange(val('v-id'), 1, 4094)) return toast('VLAN ID must be 1–4094', true); if (!nameOK(val('v-name'))) return toast('Enter a VLAN name (1–32 letters, digits, _ or -)', true); done(await apply({ kind: 'vlan', vlan_id: val('v-id'), name: val('v-name') }, 'VLAN ' + val('v-id')), () => vVlans()); } });
   }; draw();
 }
 
@@ -190,32 +225,49 @@ async function vRouting(tab = 'dynamic') {
   const [r, ifs] = await Promise.all([api('inventory?kind=routes'), api('inventory?kind=interfaces')]); let cur = r.dynamic[0] || {};
   const left = tab === 'dynamic' ? `<table><tr><th>PROTOCOL<th>PROCESS ID / AS<th>AREA / TAG<th>ROUTER ID<th>STATUS</tr>${r.dynamic.map((d, i) => `<tr class="clk ${d === cur ? 'sel' : ''}" data-i="${i}"><td style="color:#0b57d0">${d.protocol}<td>${d.process}<td>${esc(d.area)}<td class="mono">${d.router_id}<td><span class="badge b-ok">&#8226; ACTIVE</span></tr>`).join('')}</table>`
     : `<table><tr><th>NETWORK<th>MASK<th>NEXT HOP</tr>${r.static.map(s => `<tr><td class="mono">${s.network}<td class="mono">${s.mask}<td class="mono">${s.next_hop}</tr>`).join('') || '<tr><td colspan=3>No static routes</tr>'}</table>`;
-  const right = tab === 'dynamic' ? panel('DYNAMIC PROTOCOL CONFIGURATION', `<label class="f">Protocol Selection<select id="r-proto">${['OSPF', 'EIGRP', 'RIP'].map(p => `<option ${cur.protocol === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>${field('Process ID / AS', 'r-pid', cur.process || '', '', lk('AUTO-DETECT ID', 'autoid'))}
-    <label class="f"><span class="hl">Networks to advertise${lk('PULL INTERFACES', 'pull')}</span><textarea id="r-nets" rows="3">${esc((cur.networks || []).join('\n'))}</textarea></label>${field('Area / Tag', 'r-area', (cur.area || '0').replace('Area ', '').replace('-', '0'))}<div>${chips([['Area 0', 'a0'], ['Area 1', 'a1']])}</div><button class="btn wide" data-act="apply">&#10003; APPLY CHANGES</button>`)
-    : panel('STATIC ROUTE', `${field('Destination Network', 's-net', '', 'placeholder="10.0.0.0"')}${field('Subnet Mask', 's-mask', '', 'placeholder="255.255.0.0"')}${field('Next Hop', 's-nh', '', 'placeholder="10.1.1.1"')}<button class="btn wide" data-act="applys">&#10003; ADD ROUTE</button>`);
+  const right = tab === 'dynamic' ? panel('DYNAMIC PROTOCOL CONFIGURATION', `<label class="f">Protocol Selection<select id="r-proto">${['OSPF', 'EIGRP', 'RIP'].map(p => `<option ${cur.protocol === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>${field('Process ID / AS', 'r-pid', cur.process || '', 'inputmode="numeric"', lk('AUTO-DETECT ID', 'autoid'))}
+    <label class="f"><span class="hl">Networks to advertise${lk('PULL INTERFACES', 'pull')}</span><textarea id="r-nets" rows="3" placeholder="10.0.0.0/24">${esc((cur.networks || []).join('\n'))}</textarea></label><div id="r-areawrap">${field('Area / Tag', 'r-area', (cur.area || '0').replace('Area ', '').replace('-', '0'), 'inputmode="numeric" placeholder="0"')}<div>${chips([['Area 0', 'a0'], ['Area 1', 'a1']])}</div></div><button class="btn wide" data-act="apply">&#10003; APPLY CHANGES</button>`)
+    : panel('STATIC ROUTE', `${field('Destination Network', 's-net', '', 'placeholder="10.0.0.0 or 10.0.0.0/16"', '', 'A /prefix fills the mask automatically.')}${field('Subnet Mask', 's-mask', '', 'placeholder="255.255.0.0 or /16"')}${field('Next Hop', 's-nh', '', 'placeholder="10.1.1.1"')}<button class="btn wide" data-act="applys">&#10003; ADD ROUTE</button>`);
   main.innerHTML = `<div class="split"><div class="panel"><h3>Routing Inventory</h3><div class="subtabs"><button data-act="ts" class="${tab === 'static' ? 'on' : ''}">STATIC ROUTES</button><button data-act="td" class="${tab === 'dynamic' ? 'on' : ''}">DYNAMIC ROUTING</button></div>${left}</div>${right}</div>`;
   $$('tr[data-i]').forEach(x => x.onclick = () => { cur = r.dynamic[x.dataset.i]; vRoutingDraw(); });
   const vRoutingDraw = () => vRouting(tab);
+  if (tab === 'dynamic') {
+    const pidHint = () => { const p = val('r-proto'); return p === 'OSPF' ? 'OSPF process ID, 1–65535.' : p === 'EIGRP' ? 'EIGRP autonomous system number, 1–65535.' : 'RIP process ID, 1–65535.'; };
+    const pidCheck = () => { const v = val('r-pid'); const bad = v && !inRange(v, 1, 65535); setMsg('r-pid', bad ? 'Enter a whole number from 1 to 65535.' : pidHint(), bad); };
+    const areaCheck = () => { const v = val('r-area'); if (val('r-proto') !== 'OSPF') return setMsg('r-area', '', false); const bad = v && !/^\d+$/.test(v); setMsg('r-area', bad ? 'OSPF area must be a whole number (0–4294967295).' : '', bad); };
+    const protoSetup = () => { $('#r-areawrap').style.display = val('r-proto') === 'OSPF' ? '' : 'none'; pidCheck(); areaCheck(); };
+    $('#r-proto').onchange = protoSetup; $('#r-pid').oninput = pidCheck; $('#r-area').oninput = areaCheck; protoSetup();
+  } else {
+    const netSync = () => { const c = calc(val('s-net')); if (c) { $('#s-net').value = c.net; $('#s-mask').value = c.mask; } };
+    $('#s-net').onblur = netSync;
+    $('#s-net').oninput = () => setMsg('s-net', val('s-net') && !calc(val('s-net')) && !isIP(val('s-net')) ? 'Enter a network like 10.0.0.0/16.' : '', true);
+    $('#s-mask').onblur = () => { const p = maskPrefix(val('s-mask')); if (p != null) $('#s-mask').value = prefixMask(p); };
+    $('#s-mask').oninput = () => setMsg('s-mask', val('s-mask') && maskPrefix(val('s-mask')) == null ? 'Enter 255.255.0.0 or /16.' : '', true);
+    $('#s-nh').oninput = () => setMsg('s-nh', val('s-nh') && !isIP(val('s-nh')) ? 'Enter a valid next-hop IPv4 address.' : '', true);
+  }
   wire({ ts: () => vRouting('static'), td: () => vRouting('dynamic'), a0: () => $('#r-area').value = 0, a1: () => $('#r-area').value = 1,
     autoid: () => { const used = new Set(r.dynamic.map(d => +d.process)); let n = 1; while (used.has(n)) n++; $('#r-pid').value = n; },
     pull: () => { $('#r-nets').value = ifs.filter(i => i.ip && i.mask).map(i => { const c = calc(i.ip + '/' + calcMask(i.mask)); return c.net + '/' + c.p; }).join('\n'); },
-    apply: async () => done(await apply({ kind: 'dynamic_route', protocol: val('r-proto'), process_id: val('r-pid'), networks: val('r-nets'), area: val('r-area') || 0 }, 'Dynamic routing'), () => vRouting('dynamic')),
-    applys: async () => done(await apply({ kind: 'static_route', network: val('s-net'), mask: val('s-mask'), next_hop: val('s-nh') }, 'Static route'), () => vRouting('static')) });
+    apply: async () => { if (!inRange(val('r-pid'), 1, 65535)) return toast('Process ID / AS must be 1–65535', true); if (val('r-proto') === 'OSPF' && val('r-area') && !/^\d+$/.test(val('r-area'))) return toast('OSPF area must be a whole number', true); done(await apply({ kind: 'dynamic_route', protocol: val('r-proto'), process_id: val('r-pid'), networks: val('r-nets'), area: val('r-area') || 0 }, 'Dynamic routing'), () => vRouting('dynamic')); },
+    applys: async () => { const c = calc(val('s-net')); const network = c ? c.net : val('s-net'); const mask = c ? c.mask : val('s-mask'); if (!isIP(network)) return toast('Destination network must be a valid IPv4 network', true); if (maskPrefix(mask) == null) return toast('Subnet mask must be dotted or a /prefix', true); if (!isIP(val('s-nh'))) return toast('Next hop must be a valid IPv4 address', true); done(await apply({ kind: 'static_route', network, mask, next_hop: val('s-nh') }, 'Static route'), () => vRouting('static')); } });
 }
 
 async function vEtherchannel() {
   const d = await api('inventory?kind=etherchannel'); let cur = d.groups[0] || {}; const phys = d.interfaces.filter(i => /^(Gigabit|Fast|Ten)/.test(i.name)); let mem = new Set(cur.interfaces || []);
   const draw = () => {
     main.innerHTML = `<div class="split"><div class="panel"><div class="hl"><h3>EtherChannel Inventory</h3><input id="q" placeholder="Search Groups..."></div><table><tr><th>GROUP ID<th>PROTOCOL<th>INTERFACES<th>MODE<th>STATUS</tr>${d.groups.map(g => `<tr class="clk ${g.group === cur.group ? 'sel' : ''}" data-g="${g.group}"><td style="color:#0b57d0">${g.po}<td>${g.protocol}<td class="mono">${g.interfaces.join(', ')}<td>${g.mode}<td><span class="badge ${g.up ? 'b-ok' : 'b-warn'}">&#8226; ${g.up ? 'IN USE (SU)' : 'DOWN (SD)'}</span></tr>`).join('')}</table></div>
-    ${panel('CHANNEL GROUP DETAILS', `${field('Group Number', 'e-g', cur.group || '', '', lk('SUGGEST NEXT', 'next'))}<label class="f"><span class="hl">Protocol${lk('AUTO-SELECT BEST', 'best')}</span><select id="e-p">${['LACP', 'PAgP', 'Static'].map(p => `<option ${(cur.protocol || 'LACP') === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
-    <label class="f">Mode<select id="e-m"></select></label><div class="f"><span class="hl">Interface Membership<span>${lk('GENERATE', 'gen')} ${lk('SUGGEST BUNDLE', 'bundle')}</span></span><div>${phys.map(i => `<span class="ifc ${mem.has(i.short) ? 'on' : ''}" data-if="${i.short}">${i.short}</span>`).join('')}</div></div>
+    ${panel('CHANNEL GROUP DETAILS', `${field('Group Number', 'e-g', cur.group || '', 'type="number" min="1" max="48" inputmode="numeric" placeholder="1"', lk('SUGGEST NEXT', 'next'), 'Channel-group number, 1–48.')}<label class="f"><span class="hl">Protocol${lk('AUTO-SELECT BEST', 'best')}</span><select id="e-p">${['LACP', 'PAgP', 'Static'].map(p => `<option ${(cur.protocol || 'LACP') === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+    <label class="f">Mode<select id="e-m"></select></label><div class="f"><span class="hl">Interface Membership<span>${lk('GENERATE', 'gen')} ${lk('SUGGEST BUNDLE', 'bundle')}</span></span><div id="e-ifc">${phys.map(i => `<span class="ifc ${mem.has(i.short) ? 'on' : ''}" data-if="${i.short}">${i.short}</span>`).join('')}</div><small class="hint" id="e-count"></small></div>
     <label class="f">Description<textarea id="e-d" rows="2"></textarea></label><button class="btn wide" data-act="apply">&#9654; APPLY CONFIGURATION</button>`)}</div>`;
     const modes = () => { const p = val('e-p'); $('#e-m').innerHTML = (p === 'LACP' ? ['active', 'passive'] : p === 'PAgP' ? ['desirable', 'auto'] : ['on']).map(m => `<option ${m === (cur.mode || '').toLowerCase() ? 'selected' : ''}>${m}</option>`).join(''); }; $('#e-p').onchange = modes; modes();
     $$('tr[data-g]').forEach(r => r.onclick = () => { cur = d.groups.find(g => g.group == r.dataset.g); mem = new Set(cur.interfaces); draw(); }); search('q', 'tr[data-g]');
-    $$('.ifc').forEach(c => c.onclick = () => { mem.has(c.dataset.if) ? mem.delete(c.dataset.if) : mem.add(c.dataset.if); c.classList.toggle('on'); });
+    const gidCheck = () => { const v = val('e-g'); const bad = v && !inRange(v, 1, 48); setMsg('e-g', bad ? 'Group number must be 1–48.' : '', bad); };
+    const count = () => { const el = $('#e-count'); if (!el) return; el.textContent = mem.size >= 2 ? mem.size + ' interfaces selected.' : 'Select at least 2 interfaces (' + mem.size + ' selected).'; el.classList.toggle('bad', mem.size < 2); };
+    $('#e-g').oninput = gidCheck; gidCheck(); count();
+    $$('.ifc').forEach(c => c.onclick = () => { mem.has(c.dataset.if) ? mem.delete(c.dataset.if) : mem.add(c.dataset.if); c.classList.toggle('on'); count(); });
     wire({ next: () => { const u = new Set(d.groups.map(g => g.group)); let n = 1; while (u.has(n)) n++; $('#e-g').value = n; }, best: () => { $('#e-p').value = 'LACP'; modes(); },
       gen: () => { $('#e-d').value = `Po${val('e-g')} bundle: ${[...mem].join(', ')}`; }, bundle: () => { const free = phys.filter(i => !i.channel).slice(0, 2).map(i => i.short); mem = new Set(free); draw(); },
-      apply: async () => done(await apply({ kind: 'etherchannel', group: val('e-g'), protocol: val('e-p'), mode: val('e-m'), interfaces: [...mem], description: val('e-d') }, 'EtherChannel'), () => vEtherchannel()) });
+      apply: async () => { if (!inRange(val('e-g'), 1, 48)) return toast('Group number must be 1–48', true); if (mem.size < 2) return toast('Select at least 2 member interfaces', true); done(await apply({ kind: 'etherchannel', group: val('e-g'), protocol: val('e-p'), mode: val('e-m'), interfaces: [...mem], description: val('e-d') }, 'EtherChannel'), () => vEtherchannel()); } });
   }; draw();
 }
 
@@ -224,13 +276,15 @@ async function vPortsec() {
   const draw = () => {
     const first = ifs.find(i => sel.has(i.short)); if (first && first.portsec.enabled) pol = { max: first.portsec.max, violation: first.portsec.violation, sticky: first.portsec.sticky };
     main.innerHTML = `<div class="split"><div class="panel"><div class="hl"><h3>Interface Security Inventory</h3><input id="q" placeholder="Filter interfaces..."></div><table><tr><th>INTERFACE<th>SECURITY<th>MAX MACS<th>VIOLATION MODE<th>VIOLATIONS</tr>${ifs.map(i => `<tr class="clk ${sel.has(i.short) ? 'sel' : ''}" data-i="${i.short}"><td style="color:#0b57d0">${i.short}<td><span class="tog ${i.portsec.enabled ? 'on' : ''}"></span><td>${i.portsec.enabled ? i.portsec.max : '-'}<td>${i.portsec.enabled ? `<span class="badge ${i.portsec.violation === 'shutdown' ? 'b-warn' : 'b-info'}">${i.portsec.violation.toUpperCase()}</span>` : 'Disabled'}<td>${i.violations ? `<span class="crit">&#9888; ${i.violations}</span>` : i.portsec.enabled ? 0 : '-'}</tr>`).join('')}</table></div>
-    ${panel('&#128737; POLICY CONFIG <a class="link" style="float:right;color:#fff" data-act="auto">AUTO-SECURE</a>', `<label class="f">Selected Target<input readonly value="${sel.size > 1 ? 'Multiple (' + sel.size + ' selected)' : [...sel][0] || ''}"></label>${field('Max MAC Addresses', 'p-max', pol.max, 'type="number" min="1"')}
-    <label class="f">Violation Mode</label><div class="seg">${['protect', 'restrict', 'shutdown'].map(v => `<button data-v="${v}" class="${pol.violation === v ? 'on' : ''}">${v.toUpperCase()}</button>`).join('')}</div>
+    ${panel('&#128737; POLICY CONFIG <a class="link" style="float:right;color:#fff" data-act="auto">AUTO-SECURE</a>', `<label class="f">Selected Target<input readonly value="${sel.size > 1 ? 'Multiple (' + sel.size + ' selected)' : [...sel][0] || ''}"></label>${field('Max MAC Addresses', 'p-max', pol.max, 'type="number" min="1" max="8192" inputmode="numeric"', '', 'Secure MAC address limit, 1–8192.')}
+    <label class="f">Violation Mode</label><div class="seg">${['protect', 'restrict', 'shutdown'].map(v => `<button data-v="${v}" class="${pol.violation === v ? 'on' : ''}">${v.toUpperCase()}</button>`).join('')}</div><small class="hint">protect drops silently · restrict drops and logs · shutdown err-disables the port.</small>
     <div class="hl" style="margin:8px 0"><span><b>STICKY MAC LEARNING</b><br><small>Save dynamic MACs to running-config</small></span><span class="tog ${pol.sticky ? 'on' : ''}" id="p-st"></span></div><button class="btn wide" data-act="apply">&#10003; APPLY CONFIGURATION</button>
     <button class="btn red wide" data-act="off">DISABLE PORT SECURITY ON SELECTION</button>`)}</div>`;
     $$('tr[data-i]').forEach(r => r.onclick = () => { const k = r.dataset.i; sel.has(k) ? sel.delete(k) : sel.add(k); draw(); }); search('q', 'tr[data-i]');
+    const pmaxCheck = () => { const v = val('p-max'); const bad = v && !inRange(v, 1, 8192); setMsg('p-max', bad ? 'Max MACs must be a whole number from 1 to 8192.' : '', bad); };
+    $('#p-max').oninput = pmaxCheck; pmaxCheck();
     $$('.seg button').forEach(b => b.onclick = () => { pol.violation = b.dataset.v; pol.max = val('p-max'); draw(); }); $('#p-st').onclick = () => { pol.sticky = !pol.sticky; pol.max = val('p-max'); draw(); };
-    const go = async en => done(await apply({ kind: 'portsec', interfaces: [...sel], enabled: en, max_mac: val('p-max'), violation: pol.violation, sticky: pol.sticky }, 'Port security'), () => vPortsec());
+    const go = async en => { if (en && !inRange(val('p-max'), 1, 8192)) return toast('Max MACs must be 1–8192', true); done(await apply({ kind: 'portsec', interfaces: [...sel], enabled: en, max_mac: val('p-max'), violation: pol.violation, sticky: pol.sticky }, 'Port security'), () => vPortsec()); };
     wire({ auto: () => { pol = { max: 1, violation: 'shutdown', sticky: true }; draw(); }, apply: () => go(true), off: () => go(false) });
   }; draw();
 }

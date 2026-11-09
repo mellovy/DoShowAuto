@@ -3,7 +3,8 @@ import os
 import re
 from contextlib import contextmanager
 
-MOCK = os.environ.get("DSA_MOCK") == "1"
+# Case/format tolerant: Linux containers are case-sensitive, so accept dsa_mock too.
+MOCK = (os.environ.get("DSA_MOCK") or os.environ.get("dsa_mock") or "").strip().lower() in ("1", "true", "yes", "on")
 
 if not MOCK:
     from netmiko import ConnectHandler
