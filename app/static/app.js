@@ -29,10 +29,37 @@ async function runCmd(c) {
   c = (c || $('#cmdin').value || defaultCmd).trim(); prompt_(c); $('#cmdin').value = '';
   try { out((await api('console', { command: c })).output); } catch (e) { out(e.message, 'r'); }
 }
+function confirmDeploy(label, commands) {
+  return new Promise(resolve => {
+    const dev = S.me && S.me.device;
+    const w = document.createElement('div'); w.className = 'modal';
+    w.innerHTML = `<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="m-title">
+      <div class="modal-hd" id="m-title">Confirm Configuration Deployment</div>
+      <div class="modal-bd">
+        <p class="modal-meta">Target: <b>${esc(dev ? dev.name : 'No device')}</b> &middot; Action: <b>${esc(label || 'Configuration')}</b></p>
+        <p class="modal-note">Review the exact commands below. A backup of the running configuration is saved before deployment.</p>
+        <pre class="modal-cmds mono">${(commands || []).map(c => esc(c)).join('\n')}</pre>
+      </div>
+      <div class="modal-ft">
+        <button class="btn red" data-r="no">CANCEL</button>
+        <button class="btn blue" data-r="yes">CONFIRM &amp; DEPLOY</button>
+      </div></div>`;
+    const close = ok => { document.removeEventListener('keydown', onKey); w.remove(); resolve(ok); }, onKey = e => { if (e.key === 'Escape') close(false); };
+    w.onclick = e => { if (e.target === w) close(false); };
+    w.querySelector('[data-r=no]').onclick = () => close(false);
+    const yes = w.querySelector('[data-r=yes]'); yes.onclick = () => close(true);
+    document.addEventListener('keydown', onKey);
+    document.body.append(w); yes.focus();
+  });
+}
 async function apply(payload, label) {
+  let preview;
+  try { preview = await api('preview', payload); }
+  catch (e) { out('ERROR: ' + e.message, 'r'); toast(e.message, true); return false; }
+  if (!await confirmDeploy(label, preview.commands)) { out('Deployment cancelled — no changes were sent.', 'r'); return false; }
   try {
-    const r = await api('apply', payload); cfgOut(r);
-    if (r.ok) { toast((label || 'Configuration') + ' applied'); return true; }
+    const r = await api('apply', { ...payload, confirm: true, preview_id: preview.preview_id }); cfgOut(r);
+    if (r.ok) { toast((label || 'Configuration') + ' applied' + (r.backup_id ? ' — backup #' + r.backup_id + ' stored' : '')); return true; }
     toast(r.error, true); return false;
   } catch (e) { out('ERROR: ' + e.message, 'r'); toast(e.message, true); return false; }
 }

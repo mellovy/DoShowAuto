@@ -1,4 +1,4 @@
-import html, os, time
+import hashlib, html, os, time
 import cherrypy
 from . import commands as cmd, db, device, parse
 
@@ -90,6 +90,11 @@ def _b(p):
     if k == "portsec":
         return cmd.port_security(p.get("interfaces", []), bool(p.get("enabled", True)), p.get("max_mac", 1), p.get("violation", "shutdown"), bool(p.get("sticky", True)))
     raise ValueError("Unknown configuration type")
+
+
+def _fingerprint(cmds, dev_id):
+    """Stable id tying a reviewed command list to a device (REQ-4.2-1/2)."""
+    return hashlib.sha256((f"{dev_id}|" + "\n".join(cmds)).encode()).hexdigest()[:16]
 
 
 class Api:
@@ -228,21 +233,41 @@ class Api:
     @cherrypy.expose
     @cherrypy.tools.json_in()
     @cherrypy.tools.json_out()
-    def apply(self):
-        u = auth(); p = jin()
+    def preview(self):
+        auth(); p = jin()
         try:
             cmds = _b(p)
             creds = cur_device()
         except (ValueError, KeyError) as e:
             return bad(f"Invalid input: {e}")
+        return {"ok": True, "commands": cmds, "preview_id": _fingerprint(cmds, creds["id"])}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_in()
+    @cherrypy.tools.json_out()
+    def apply(self):
+        u = auth(); p = jin()
+        if not p.get("confirm"):
+            return bad("Review the command preview and confirm before deploying.", 409)
+        try:
+            cmds = _b(p)
+            creds = cur_device()
+        except (ValueError, KeyError) as e:
+            return bad(f"Invalid input: {e}")
+        if p.get("preview_id") != _fingerprint(cmds, creds["id"]):
+            return bad("The reviewed commands no longer match the preview. Review again.", 409)
+        try:
+            bid = db.save_backup(creds["id"], device.running_config(creds))
+        except Exception as e:
+            return bad(f"Pre-change backup failed; deployment aborted: {e}", 502)
         try:
             out = device.push(creds, cmds)
         except Exception as e:
             return bad(f"SSH error: {e}", 502)
         db.audit(u, creds["host"], "; ".join(cmds), out)
         if device.has_error(out):
-            return {"ok": False, "commands": cmds, "output": out, "error": "The device rejected one or more commands."}
-        return {"ok": True, "commands": cmds, "output": out}
+            return {"ok": False, "commands": cmds, "output": out, "backup_id": bid, "error": "The device rejected one or more commands."}
+        return {"ok": True, "commands": cmds, "output": out, "backup_id": bid}
 
     @cherrypy.expose
     @cherrypy.tools.json_in()
