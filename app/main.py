@@ -71,6 +71,22 @@ def ago(ts):
 # kind -> command builder (SRS 4.1.3 / screens 3.1.1.2 - 3.1.1.8)
 def _b(p):
     k = p.get("kind")
+    if p.get("action", "set") == "remove":
+        if k == "vlan":
+            return cmd.vlan_remove(p["vlan_id"])
+        if k == "interface":
+            return cmd.interface_reset(p["iface"])
+        if k == "dhcp":
+            return cmd.dhcp_remove(p["name"])
+        if k == "static_route":
+            return cmd.static_route_remove(p["network"], p["mask"], p["next_hop"])
+        if k == "etherchannel":
+            return cmd.etherchannel_remove(p["group"])
+        if k == "portsec":
+            return cmd.portsec_remove(p["iface"])
+        if k == "dynamic_route":
+            return cmd.routing_remove(p["protocol"], p.get("process"))
+        raise ValueError("Unknown configuration type")
     if k == "basic":
         return cmd.basic_config(p.get("hostname"), p.get("banner"), p.get("secret") if p.get("enable_secret") else None, bool(p.get("encryption")))
     if k == "interface":

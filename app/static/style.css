@@ -80,5 +80,9 @@ label.f input:focus,label.f select:focus,label.f textarea:focus{border-color:var
 input.invalid,select.invalid,textarea.invalid{border-color:var(--red);background:#fff7f7}
 small.hint,small.msg{display:block;margin-top:3px;font-size:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--mut);line-height:1.45}
 small.hint.bad,small.msg.bad{color:var(--red)}
+/* pending state: the control that fired the request is disabled and pulses until it resolves */
+.busy{opacity:.55;pointer-events:none;cursor:progress;animation:dsBusy 1s ease-in-out infinite}
+@keyframes dsBusy{0%,100%{opacity:.55}50%{opacity:.32}}
+.bar i{transition:width .3s ease}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
 @media(max-width:640px){header{flex-wrap:wrap;gap:8px}nav.tabs{overflow-x:auto}.opcmd{grid-template-columns:1fr}.filters{flex-wrap:wrap}.filters .grow{flex-basis:100%}.dock-body{height:200px}}

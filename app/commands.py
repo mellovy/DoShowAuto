@@ -388,3 +388,50 @@ def port_security(interfaces, enabled=True, max_mac=1, violation="shutdown", sti
                 f"switchport port-security violation {violation}",
                 "switchport port-security mac-address sticky" if sticky else "no switchport port-security mac-address sticky"]
     return out
+
+
+# ---- Removal / reset generators (Sprint 3) -----------------------------
+def vlan_remove(vlan_id):
+    return [f"no vlan {_vlan(vlan_id)}"]
+
+
+def interface_reset(iface):
+    return [f"default interface {_iface(iface)}"]
+
+
+def dhcp_remove(name):
+    return [f"no ip dhcp pool {_name(name, 'pool name')}"]
+
+
+def static_route_remove(network, mask, next_hop):
+    net, m = _net(network, mask)
+    return [f"no ip route {net} {m} {_ip(next_hop, 'next hop')}"]
+
+
+def etherchannel_remove(group):
+    try:
+        g = int(group)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid channel group {group!r}: must be an integer 1-48")
+    if not 1 <= g <= 48:
+        raise ValueError(f"Invalid channel group {g}: must be 1-48")
+    return [f"no interface Port-channel {g}"]
+
+
+def portsec_remove(iface):
+    return [f"interface {_iface(iface)}", "no switchport port-security"]
+
+
+def routing_remove(protocol, process):
+    protocol = (protocol or "").lower()
+    if protocol == "rip":
+        return ["no router rip"]
+    if protocol not in ("ospf", "eigrp"):
+        raise ValueError(f"Invalid routing protocol {protocol!r}: must be OSPF, EIGRP or RIP")
+    try:
+        pid = int(process)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid process ID / AS {process!r}: must be an integer 1-65535")
+    if not 1 <= pid <= 65535:
+        raise ValueError(f"Invalid process ID / AS {pid}: must be 1-65535")
+    return [f"no router {protocol} {pid}"]

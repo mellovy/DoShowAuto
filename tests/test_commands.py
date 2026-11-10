@@ -1,5 +1,10 @@
+import os
+
+os.environ.setdefault("DSA_MOCK", "1")  # keep device.py from importing netmiko
+
 import pytest
 from app import commands as c
+from app.main import _b
 
 
 def test_hostname():
@@ -176,3 +181,82 @@ def test_port_security_max_bounds():
     for bad in (0, 8193, "x"):
         with pytest.raises(ValueError):
             c.port_security(["Gi0/1"], True, bad)
+
+
+# ---- removal / reset generators -----------------------------------------
+def test_vlan_remove():
+    assert c.vlan_remove(20) == ["no vlan 20"]
+    with pytest.raises(ValueError):
+        c.vlan_remove(0)
+
+
+def test_interface_reset():
+    assert c.interface_reset("Gi0/1") == ["default interface Gi0/1"]
+    with pytest.raises(ValueError):
+        c.interface_reset("Banana0/1")
+
+
+def test_dhcp_remove():
+    assert c.dhcp_remove("LAN") == ["no ip dhcp pool LAN"]
+    with pytest.raises(ValueError):
+        c.dhcp_remove("bad name!")
+
+
+def test_static_route_remove():
+    assert c.static_route_remove("10.1.1.5", "255.255.255.0", "10.0.0.1") == \
+        ["no ip route 10.1.1.0 255.255.255.0 10.0.0.1"]
+    assert c.static_route_remove("10.1.1.0", "24", "10.0.0.1") == \
+        ["no ip route 10.1.1.0 255.255.255.0 10.0.0.1"]
+    with pytest.raises(ValueError):
+        c.static_route_remove("10.1.1.0", "255.255.0.255", "10.0.0.1")
+
+
+def test_etherchannel_remove():
+    assert c.etherchannel_remove(1) == ["no interface Port-channel 1"]
+    with pytest.raises(ValueError):
+        c.etherchannel_remove(49)
+
+
+def test_portsec_remove():
+    assert c.portsec_remove("Gi0/1") == ["interface Gi0/1", "no switchport port-security"]
+    with pytest.raises(ValueError):
+        c.portsec_remove("switchport")
+
+
+def test_routing_remove():
+    assert c.routing_remove("ospf", 100) == ["no router ospf 100"]
+    assert c.routing_remove("eigrp", 65535) == ["no router eigrp 65535"]
+    assert c.routing_remove("RIP", None) == ["no router rip"]
+    with pytest.raises(ValueError):
+        c.routing_remove("bgp", 1)
+    with pytest.raises(ValueError):
+        c.routing_remove("ospf", 0)
+
+
+# ---- _b: remove dispatch + unchanged default path ------------------------
+def test_b_remove_dispatch():
+    assert _b({"kind": "vlan", "action": "remove", "vlan_id": 10}) == ["no vlan 10"]
+    assert _b({"kind": "interface", "action": "remove", "iface": "Gi0/1"}) == ["default interface Gi0/1"]
+    assert _b({"kind": "dhcp", "action": "remove", "name": "LAN"}) == ["no ip dhcp pool LAN"]
+    assert _b({"kind": "static_route", "action": "remove", "network": "10.1.1.0",
+               "mask": "255.255.255.0", "next_hop": "10.0.0.1"}) == \
+        ["no ip route 10.1.1.0 255.255.255.0 10.0.0.1"]
+    assert _b({"kind": "etherchannel", "action": "remove", "group": 1}) == ["no interface Port-channel 1"]
+    assert _b({"kind": "portsec", "action": "remove", "iface": "Gi0/1"}) == \
+        ["interface Gi0/1", "no switchport port-security"]
+    assert _b({"kind": "dynamic_route", "action": "remove", "protocol": "ospf", "process": 100}) == \
+        ["no router ospf 100"]
+
+
+def test_b_remove_unknown_kind():
+    with pytest.raises(ValueError, match="Unknown configuration type"):
+        _b({"kind": "nope", "action": "remove"})
+
+
+def test_b_default_path_unchanged():
+    assert _b({"kind": "vlan", "vlan_id": 10, "name": "Sales"}) == ["vlan 10", "name Sales"]
+    assert _b({"kind": "vlan", "action": "set", "vlan_id": 10}) == ["vlan 10"]
+    assert _b({"kind": "static_route", "network": "10.1.1.5", "mask": "24", "next_hop": "10.0.0.1"}) == \
+        ["ip route 10.1.1.0 255.255.255.0 10.0.0.1"]
+    with pytest.raises(ValueError, match="Unknown configuration type"):
+        _b({"kind": "nope"})
